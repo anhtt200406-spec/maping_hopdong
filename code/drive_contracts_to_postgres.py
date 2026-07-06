@@ -32,15 +32,10 @@ if __name__ == "__main__":
     main()
 
 
-"""
-    config.py         - cấu hình (đọc từ .env)
-    drive_auth.py      - OAuth / lấy Drive service
-    drive_walker.py    - duyệt cây thư mục, resolve shortcut
-    normalize.py       - chuẩn hóa tên nhóm/brand, parse ngày, dựng rows
-    postgres_store.py  - DDL + upsert Postgres
 
+"""
 Chạy toàn bộ:
     python drive_contracts_to_postgres.py
 Chạy riêng 1 nhóm (test nhanh):
-    python drive_contracts_to_postgres.py --nhom "BẢO HIỂM"
+    python drive_contracts_to_postgres.py --nhom "BẢO HIỂM", có thể thay thế bằng tên nhóm khác.
 """
