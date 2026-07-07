@@ -1,22 +1,9 @@
 """duyệt cây thư mục Drive, resolve shortcut, gom PDF."""
 
-import time
-
 from googleapiclient.errors import HttpError
 
 from config import FOLDER, SHORTCUT, PDF
-
-
-def _execute_with_retry(request, tries=5):
-    """chờ nếu sever bị quá tải"""
-    for i in range(tries):
-        try:
-            return request.execute()
-        except HttpError as e:
-            if e.resp.status in (403, 429, 500, 503) and i < tries - 1:
-                time.sleep(2 ** i)
-                continue
-            raise
+from drive_auth import execute_with_retry
 
 
 def list_children(service, folder_id):
@@ -32,7 +19,7 @@ def list_children(service, folder_id):
             supportsAllDrives=True,
             corpora="allDrives",
         )
-        resp = _execute_with_retry(req)
+        resp = execute_with_retry(req.execute)
         files += resp.get("files", [])
         token = resp.get("nextPageToken")
         if not token:

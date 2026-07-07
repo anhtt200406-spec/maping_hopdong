@@ -17,8 +17,10 @@ def _required(name):
     return value
 
 
-# Chỉ cần đọc metadata (tên). Nếu sau này tải PDF về bóc mã -> đổi sang drive.readonly
-SCOPES = ["https://www.googleapis.com/auth/drive.metadata.readonly"]
+# Pass 2 cần tải nội dung PDF (bóc mã hợp đồng) -> đổi từ drive.metadata.readonly
+# sang drive.readonly. Đổi scope -> token.json cũ hết hiệu lực, phải xoá để đăng
+# nhập lại (drive_auth.py tự sinh lại token mới).
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "credentials.json")
 TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token.json")

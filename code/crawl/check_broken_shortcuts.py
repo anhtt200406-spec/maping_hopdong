@@ -2,9 +2,16 @@
 (shortcut hỏng/thiếu quyền), không upsert Postgres. Dùng để tái kiểm tra
 nhanh sau khi nhờ Legal share lại, không cần chạy full pipeline.
 
-Chạy:
-    python check_broken_shortcuts.py
+Chạy (từ code/):
+    python crawl/check_broken_shortcuts.py
 """
+
+import os
+import sys
+
+# crawl/ nằm trong code/, cần thêm code/ vào sys.path để import được các
+# module dùng chung (config, drive_auth, postgres_store) nằm ở gốc code/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drive_auth import get_service
 from drive_walker import walk

@@ -1,4 +1,10 @@
 import argparse
+import os
+import sys
+
+# crawl/ nằm trong code/, cần thêm code/ vào sys.path để import được các
+# module dùng chung (config, drive_auth, postgres_store) nằm ở gốc code/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from drive_auth import get_service
 from normalize import build_rows
@@ -34,8 +40,8 @@ if __name__ == "__main__":
 
 
 """
-Chạy toàn bộ:
-    python drive_contracts_to_postgres.py
+Chạy toàn bộ (từ code/):
+    python crawl/drive_contracts_to_postgres.py
 Chạy riêng 1 nhóm (test nhanh):
-    python drive_contracts_to_postgres.py --nhom "BẢO HIỂM", có thể thay thế bằng tên nhóm khác.
+    python crawl/drive_contracts_to_postgres.py --nhom "BẢO HIỂM", có thể thay thế bằng tên nhóm khác.
 """
