@@ -138,3 +138,11 @@ def update_contract_code(drive_file_id, code, source, confidence, dinh_kem_hop_d
     with conn, conn.cursor() as cur:
         cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, drive_file_id))
     conn.close()
+
+
+def update_contract_code_cur(cur, drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None):
+    """Giống update_contract_code() nhưng dùng cursor đã mở sẵn (1 connection
+    tái sử dụng suốt lượt chạy) thay vì connect() mới mỗi dòng - dùng khi chạy
+    pipeline song song (extract_contract_codes.py::run_pipeline), gọi commit()
+    ở phía caller sau mỗi lần gọi hàm này."""
+    cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, drive_file_id))

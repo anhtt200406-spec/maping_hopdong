@@ -28,7 +28,11 @@ def execute_with_retry(call, tries=5):
             raise
 
 
-def get_service():
+def load_credentials():
+    """Chỉ lo phần token (đọc/refresh/đăng nhập lại), không build service -
+    tách riêng để ocr/extract_contract_codes.py gọi 1 lần ở main() (refresh
+    trước khi có thread nào chạy), rồi mỗi fetch thread tự build service riêng
+    từ cùng 1 creds này (xem pdf_fetcher.get_thread_service)."""
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -40,4 +44,8 @@ def get_service():
             creds = flow.run_local_server(port=0)
         with open(TOKEN_FILE, "w") as f:
             f.write(creds.to_json())
-    return build("drive", "v3", credentials=creds)
+    return creds
+
+
+def get_service():
+    return build("drive", "v3", credentials=load_credentials())

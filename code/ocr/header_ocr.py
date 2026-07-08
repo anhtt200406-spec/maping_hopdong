@@ -23,11 +23,19 @@ def _get_tier1():
     global _tier1
     if _tier1 is None:
         from paddleocr import PaddleOCR
+        # paddleocr mặc định cpu_threads=10/instance (DEFAULT_CPU_THREADS trong
+        # _constants.py) - ổn khi chạy 1 process, nhưng nếu chạy N process OCR
+        # song song (multiprocessing) mà không ghim thì N*10 thread tranh nhau
+        # vài core thật, triệt tiêu lợi ích song song. Đọc qua env var (do
+        # orchestrator set trước khi fork worker) thay vì tham số hàm, để không
+        # phải sửa signature ocr_tier1()/extract() phía trên.
+        cpu_threads = int(os.environ.get("OCR_CPU_THREADS", "1"))
         _tier1 = PaddleOCR(
             lang="vi",
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            cpu_threads=cpu_threads,
         )
     return _tier1
 
