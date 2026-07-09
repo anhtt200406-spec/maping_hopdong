@@ -48,7 +48,7 @@ def _get_tier2():
     return _tier2
 
 
-def render_header_crop(pdf_bytes, top_ratio=0.35):
+def render_header_crop(pdf_bytes, top_ratio=0.30):
     """Cắt vùng top_ratio đầu trang 1 (chứa dòng 'Số:' và dòng 'ngày...tháng...
     năm'), trả về ảnh numpy RGB để OCR."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")

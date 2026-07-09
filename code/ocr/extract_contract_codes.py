@@ -196,17 +196,21 @@ def main():
     )
     wall = time.perf_counter() - t_start
 
+    # In danh sách "cần soi tay" TRƯỚC, tóm tắt thời gian NGẮN GỌN in sau cùng -
+    # danh sách này có thể dài hàng trăm dòng (vd 1 nhóm 378 file có 273 dòng
+    # cần soi tay), nếu in tóm tắt trước sẽ bị đẩy lên trên, cuộn khuất khỏi
+    # màn hình ngay khi lệnh chạy xong.
+    if low_confidence:
+        print(f"\n⚠ {len(low_confidence)} hợp đồng cần soi tay (confidence thấp hoặc không đọc được):")
+        for file_path, code in low_confidence:
+            print(f"   {file_path} -> {code or '(không đọc được)'}")
+
     n = n_done or 1
     print(f"\nThời gian trung bình/file: tải {tong_tai / n:.1f}s | xử lý (text-layer/OCR) {tong_ocr / n:.1f}s | "
           f"tổng {(tong_tai + tong_ocr) / n:.1f}s | wall-clock thực tế {wall / n:.1f}s/file "
           f"(tổng {wall:.0f}s cho {n_done} file, chạy song song)")
     print(f"Tổng xử lý: {n_done} | " +
           " | ".join(f"{k}: {v}" for k, v in counts.items()))
-
-    if low_confidence:
-        print(f"\n⚠ {len(low_confidence)} hợp đồng cần soi tay (confidence thấp hoặc không đọc được):")
-        for file_path, code in low_confidence:
-            print(f"   {file_path} -> {code or '(không đọc được)'}")
 
 
 if __name__ == "__main__":

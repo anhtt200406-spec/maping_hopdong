@@ -3,3 +3,5 @@ Claude.md
 credentials.json
 token.json
 __pycache__/
+.venv312/
+.bench_cache/
