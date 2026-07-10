@@ -1,15 +1,18 @@
 """Crop vùng header trang 1 + chạy OCR (tier 1 = PP-OCRv6, tier 2 = PaddleOCR-VL).
 
-Lưu ý máy này (CPU cũ, không phải lỗi code): PaddleOCR bật mkldnn mặc định để
-tăng tốc, nhưng bản paddle 3.3.1 + CPU này bị lỗi
-"ConvertPirAttribute2RuntimeAttribute not support" khi chạy mkldnn. Phải tắt
-bằng biến môi trường PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=False TRƯỚC KHI import
-paddleocr (đặt ở đây, đầu module, để mọi nơi import header_ocr đều tự có fix,
-không cần nhớ set tay mỗi lần chạy)."""
+Lịch sử mkldnn (2026-07-10, đã fix - không phải lỗi CPU máy này):
+`paddlepaddle` 3.3.1 + mkldnn bị crash "ConvertPirAttribute2RuntimeAttribute
+not support" (regression giới thiệu từ đúng bản 3.3.0, xác nhận qua GitHub
+issue PaddlePaddle/PaddleOCR#18162 và PaddlePaddle/Paddle#77340 - "worked
+correctly in PaddlePaddle 3.2.x and earlier"). Đã downgrade `paddlepaddle`
+xuống 3.2.1 (`requirements.txt`) - hết crash hoàn toàn, đã benchmark 20 file
+PDF thật: mkldnn bật cho ~1.9x nhanh hơn (39s/file so với 74s/file tắt), 0
+sai khác kết quả trích xuất so với tắt. Không còn cần tắt mkldnn nữa - để
+thư viện dùng mặc định gốc của nó (bật). Nếu sau này lỡ tay nâng cấp
+`paddlepaddle` lên >=3.3.0 trở lại, khả năng cao crash này quay lại - kiểm tra
+lại bằng `python ocr/bench_ocr.py run --config mkldnn_on` trước khi tin."""
 
 import os
-
-os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
 
 import fitz  # PyMuPDF
 import numpy as np

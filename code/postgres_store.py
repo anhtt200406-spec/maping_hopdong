@@ -29,14 +29,29 @@ ALTER TABLE contracts ADD COLUMN IF NOT EXISTS dinh_kem_hop_dong_so TEXT;
 ALTER TABLE contracts DROP COLUMN IF EXISTS raw_header_text;
 """
 
+# contract_code IS NULL gộp chung 2 tình huống khác hẳn nhau: (1) đã quét
+# xong nhưng không ra mã - extract() vẫn trả confidence='low' cho case này
+# (xem code_extractor.py cuối extract()), không phải NULL; (2) chưa từng
+# quét/quét bị crash (extract_error/fetch_error/worker_crashed) - confidence
+# NULL thật. Mặc định chỉ lấy nhóm (2) để không tốn OCR quét lại các dòng đã
+# có kết luận "low" từ trước; INCLUDE_LOW nới thêm nhóm (1), dùng khi chủ
+# động muốn quét lại (vd sau khi sửa regex/tune OCR).
 FETCH_PENDING = """
 SELECT drive_file_id, file_path
 FROM contracts
-WHERE contract_code IS NULL
+WHERE contract_code_confidence IS NULL
+"""
+
+FETCH_PENDING_INCLUDE_LOW = """
+SELECT drive_file_id, file_path
+FROM contracts
+WHERE contract_code_confidence IS NULL OR contract_code_confidence = 'low'
 """
 
 COUNT_STATUS = """
-SELECT COUNT(*), COUNT(contract_code)
+SELECT COUNT(*),
+       COUNT(contract_code_confidence),
+       COUNT(*) FILTER (WHERE contract_code_confidence = 'low')
 FROM contracts
 """
 
@@ -92,13 +107,16 @@ def save(rows):
     return inserted, updated
 
 
-def fetch_pending(limit=None, nhom=None):
-    """Lấy các dòng còn thiếu contract_code (drive_file_id, file_path).
+def fetch_pending(limit=None, nhom=None, include_low=False):
+    """Lấy các dòng cần quét (drive_file_id, file_path).
     nhom=None -> lấy tất cả nhóm; nhom="KHU CÔNG NGHIỆP" -> chỉ nhóm đó
     (so khớp ILIKE, không cần gõ đúng y hệt, giống --nhom bên crawl/).
-    limit=None -> lấy hết (trong phạm vi nhom đã lọc)."""
+    limit=None -> lấy hết (trong phạm vi nhom đã lọc).
+    include_low=False (mặc định) -> chỉ chưa-từng-quét/bị crash
+    (contract_code_confidence IS NULL). include_low=True -> quét lại cả các
+    dòng đã có kết luận confidence='low' (xem comment FETCH_PENDING_INCLUDE_LOW)."""
     ensure_schema()
-    query, params = FETCH_PENDING, []
+    query, params = (FETCH_PENDING_INCLUDE_LOW if include_low else FETCH_PENDING), []
     if nhom is not None:
         query += " AND nhom ILIKE %s"
         params.append(f"%{nhom}%")
@@ -115,10 +133,11 @@ def fetch_pending(limit=None, nhom=None):
 
 
 def count_status(nhom=None):
-    """Đếm (tổng số hợp đồng, số đã có contract_code) theo nhom hoặc toàn bộ.
-    COUNT(contract_code) chỉ đếm giá trị NOT NULL (SQL chuẩn) -> ra thẳng số
-    đã xử lý trước đó, dùng để báo lại kiểu "N đã có sẵn (bỏ qua), M cần xử lý"
-    giống cách save() báo (inserted, updated) bên Pass 1."""
+    """Đếm (tổng số hợp đồng, số đã quét ít nhất 1 lần, số đã quét nhưng
+    confidence thấp) theo nhom hoặc toàn bộ. COUNT(contract_code_confidence)
+    chỉ đếm giá trị NOT NULL (SQL chuẩn) -> ra thẳng số đã quét (kể cả
+    confidence='low', không kể chưa-từng-quét/crash). Dùng để báo lại kiểu
+    "N chưa từng quét | M đã quét confidence thấp | K đã xong"."""
     ensure_schema()
     query, params = COUNT_STATUS, []
     if nhom is not None:
@@ -127,9 +146,9 @@ def count_status(nhom=None):
     conn = psycopg2.connect(**PG_CONFIG)
     with conn, conn.cursor() as cur:
         cur.execute(query, params)
-        total, done = cur.fetchone()
+        total, attempted, attempted_low = cur.fetchone()
     conn.close()
-    return total, done
+    return total, attempted, attempted_low
 
 
 def update_contract_code(drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None):

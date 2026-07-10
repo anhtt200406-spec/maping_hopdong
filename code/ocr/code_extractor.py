@@ -41,6 +41,27 @@ CODE_RE_LG = re.compile(
     r"(\d{1,4}/[A-ZĐ]+-[A-ZĐ]+-\d{8}-\d{3,4}/C\d{8,11})"
 )
 
+# Biến thể thiếu hẳn phần năm (không phải OCR đọc sót - văn bản gốc chỉ có
+# ngày+tháng/loại/bên-bên, không có nhóm 4 số năm), gặp thật ở SHINHAN BẮC
+# NINH: "0303/HĐ/URBOX-SHINHANBACNINH" (ký ngày 03/03/2026). Bắt buộc phải có
+# "loại" (khác CODE_RE coi loại là optional) để giảm khớp nhầm vì mất hẳn 1
+# nhóm số so với CODE_RE - không có "loại" đứng giữa 2 dấu "/" thì độ đặc thù
+# quá thấp. Vẫn cross-check được với dòng ngày như bình thường vì
+# _code_matches_date() chỉ so nhóm đầu tiên (ddmm), không đụng tới phần năm
+# (không có).
+CODE_RE_NOYEAR = re.compile(
+    r"(\d{1,4}/[A-ZĐ]+/[A-ZĐ0-9]+(?:-[A-ZĐ0-9]+)+)"
+)
+
+# Biến thể ngày+tháng+năm gộp liền 8 chữ số, không có "/" phân tách (khác hẳn
+# 3 format chuẩn), gặp thật ở G HOMES (text layer PDF thật, không phải OCR):
+# "08012025/GHOMES-URBOX" (ký ngày 08/01/2025, "08012025" = ddmmyyyy liền).
+# _code_matches_date() phải tự nhận diện prefix 8 số này (xem hàm đó) vì
+# logic so sánh ddmm mặc định giả định prefix chỉ dài tối đa 4 số.
+CODE_RE_COMPACT8 = re.compile(
+    r"(\d{8}/[A-ZĐ0-9]+(?:-[A-ZĐ0-9]+)+)"
+)
+
 # vd "ngày 25 tháng 03 năm 2025"
 DATE_LINE_RE = re.compile(
     r"ng[aà]y\s*(\d{1,2}).*?th[aá]ng\s*(\d{1,2}).*?n[aă]m\s*(\d{4})",
@@ -60,15 +81,36 @@ DATE_LINE_RE = re.compile(
 # khi đọc nhầm dấu của "ố") ở 1 Phụ lục LG Electronics. SO_LINE_RE cũ bị bỏ sót
 # cả 2 vì chỉ liệt kê "ôoố".
 # (?:/\s*no\.?\s*)?: nhiều hợp đồng song ngữ ghi "Số/ No.:" thay vì "Số:".
-SO_LINE_RE = re.compile(r"^\s*S[oòóỏõọôồốổỗộő]\s*(?:/\s*no\.?\s*)?:?\s*(.+)", re.IGNORECASE)
+# \(?\s*: dòng "Số:" đôi khi nằm trong ngoặc đơn, vd "(Số: 2607/2024/...)" ở
+# VIETINBANK - cho phép 1 dấu "(" tuỳ chọn trước "S". Dấu ")" ở cuối không cần
+# xử lý riêng vì CODE_RE tự dừng khớp trước ký tự không hợp lệ.
+# \b ngay sau lớp nguyên âm: BẮT BUỘC, nếu không "Số" sẽ khớp nhầm cả từ tiếng
+# Anh "SOCIALIST" (trong tiêu đề song ngữ "CỘNG HÒA...374/SOCIALIST REPUBLIC OF
+# VIETNAM" có ở hầu hết hợp đồng) - "S"+"O" khớp [oòó...] vì re.IGNORECASE
+# không phân biệt hoa/thường, khiến _has_so_line() tưởng nhầm đã thấy dòng
+# "Số:" nên bỏ qua escalation crop 30%->55%, mất luôn dòng mã thật nằm dưới -
+# gặp thật ở Phụ lục HYOSUNG ĐỒNG NAI NYLON. \b đảm bảo ký tự theo sau nguyên
+# âm không phải chữ cái (dấu câu/khoảng trắng) - "Số:"/"Số " qua được,
+# "SOCIALIST" (theo sau là "C") thì không.
+SO_LINE_RE = re.compile(r"^\s*\(?\s*S[oòóỏõọôồốổỗộő]\b\s*(?:/\s*no\.?\s*)?:?\s*(.+)", re.IGNORECASE)
 
 # OCR đôi khi làm RỚT LUÔN nguyên âm giữa "S" và ":" (ra "S:" trần, gặp thật ở
 # cả SMBC lẫn SONADEZI - xem parse_code_dash/BLANK_NUM_RE bên dưới) - SO_LINE_RE
 # trên KHÔNG khớp vì bắt buộc phải có 1 trong [ôoố]. Không thể bỏ hẳn yêu cầu
 # này (sẽ khớp nhầm mọi từ đầu dòng bắt đầu bằng "S" như "Sáng ngày...") nên
 # tách pattern riêng: chỉ chấp nhận thiếu nguyên âm KHI có dấu ":" bắt buộc
-# ngay sau (không optional như SO_LINE_RE) - đủ hẹp để không khớp nhầm.
-SO_LINE_NOVOWEL_RE = re.compile(r"^\s*S\s*(?:/\s*no\.?\s*)?:\s*(.+)", re.IGNORECASE)
+# ngay sau (không optional như SO_LINE_RE) - đủ hẹp để không khớp nhầm. \(?\s*
+# đầu dòng: cùng lý do dấu ngoặc đơn ở SO_LINE_RE trên.
+SO_LINE_NOVOWEL_RE = re.compile(r"^\s*\(?\s*S\s*(?:/\s*no\.?\s*)?:\s*(.+)", re.IGNORECASE)
+
+# OCR đôi khi rớt CẢ nguyên âm LẪN dấu ":" (khác SO_LINE_NOVOWEL_RE ở trên vẫn
+# còn ":"), ra "S" trần dính khoảng trắng rồi số luôn - gặp thật ở SHINHAN BẮC
+# NINH: "S 0303/HD/URBOX-SHINHANBACNINH". Case này đã được Claude.md mục 6 ghi
+# nhận "chấp nhận rơi vào soi tay, chưa có pattern riêng" - giờ có bằng chứng
+# thật để viết. Không thể nới lỏng SO_LINE_NOVOWEL_RE bỏ luôn dấu ":" (sẽ khớp
+# nhầm "Sáng ngày...") nên bắt buộc ngay sau khoảng trắng phải là số 3-4 chữ số
+# rồi dấu "/" - đủ hẹp để không khớp nhầm từ tiếng Việt thường bắt đầu bằng "S".
+SO_LINE_NOVOWEL_NOCOLON_RE = re.compile(r"^\s*S\s+(\d{3,4}/.+)", re.IGNORECASE)
 
 # Phụ lục/văn bản đính kèm thường KHÔNG có "Số:" riêng của bản thân nó, mà chỉ
 # nói đính kèm/căn cứ theo 1 "hợp đồng nguyên tắc" khác - phải lấy mã hợp đồng
@@ -99,6 +141,20 @@ def parse_code_lg(text):
     return m.group(1) if m else None
 
 
+def parse_code_noyear(text):
+    """Bắt định dạng thiếu năm (CODE_RE_NOYEAR) - chỉ gọi từ nhánh đã neo
+    "Số:", lý do tương tự parse_code_dash."""
+    m = CODE_RE_NOYEAR.search(text.replace(" ", ""))
+    return m.group(1) if m else None
+
+
+def parse_code_compact8(text):
+    """Bắt định dạng ngày gộp liền 8 số (CODE_RE_COMPACT8) - chỉ gọi từ nhánh
+    đã neo "Số:", lý do tương tự parse_code_dash."""
+    m = CODE_RE_COMPACT8.search(text.replace(" ", ""))
+    return m.group(1) if m else None
+
+
 # "Số:" đôi khi bị OCR ra thiếu hẳn phần số (hiện thành dấu chấm placeholder)
 # khi số thật được viết/đóng dấu tách khỏi vị trí in sẵn trên template, OCR
 # đọc thành 1 dòng riêng ngay TRƯỚC dòng "Số:" - gặp thật ở SONADEZI, 2 dòng
@@ -114,11 +170,13 @@ STANDALONE_DDMM_RE = re.compile(r"^\d{3,4}$")
 
 def _find_code_line(lines):
     for i, line in enumerate(lines):
-        m = SO_LINE_RE.match(line) or SO_LINE_NOVOWEL_RE.match(line)
+        m = (SO_LINE_RE.match(line) or SO_LINE_NOVOWEL_RE.match(line)
+             or SO_LINE_NOVOWEL_NOCOLON_RE.match(line))
         if not m:
             continue
         rest = m.group(1)
-        code = parse_code(rest) or parse_code_dash(rest) or parse_code_lg(rest)
+        code = (parse_code(rest) or parse_code_dash(rest) or parse_code_lg(rest)
+                or parse_code_noyear(rest) or parse_code_compact8(rest))
         if code:
             return code
         if i > 0 and BLANK_NUM_RE.match(rest.replace(" ", "")):
@@ -150,7 +208,8 @@ def _has_so_line(lines):
     đúng dòng đó, tăng crop không giúp gì; chỉ đáng thử lại khi dòng "Số:"
     HOÀN TOÀN vắng mặt (khả năng cao nằm dưới rìa crop, gặp thật ở vài Phụ lục
     tiêu đề song ngữ dài của LG Electronics - xem extract())."""
-    return any(SO_LINE_RE.match(line) or SO_LINE_NOVOWEL_RE.match(line) for line in lines)
+    return any(SO_LINE_RE.match(line) or SO_LINE_NOVOWEL_RE.match(line)
+               or SO_LINE_NOVOWEL_NOCOLON_RE.match(line) for line in lines)
 
 
 def _find_attached_code(lines):
@@ -179,6 +238,11 @@ def _code_matches_date(code, ddmm):
     if not code or not ddmm:
         return False
     prefix = code.split("/")[0]
+    # Định dạng CODE_RE_COMPACT8 gộp ngày+tháng+năm liền thành 8 số (vd
+    # "08012025"), 4 số đầu mới là phần ddmm cần so - nếu so nguyên cả 8 số
+    # với ddmm (4 số) sẽ luôn lệch dù đúng.
+    if len(prefix) == 8 and prefix.isdigit():
+        prefix = prefix[:4]
     return prefix.zfill(4) == ddmm or prefix == ddmm
 
 

@@ -7,6 +7,11 @@ Chạy hết:
 Chỉ 1 nhóm cụ thể (giống --nhom bên crawl/), có thể kèm --limit để test mẫu:
     python ocr/extract_contract_codes.py --nhom "KHU CÔNG NGHIỆP"
 
+Mặc định CHỈ quét các dòng chưa từng quét (hoặc quét bị crash) - đã quét mà
+không ra mã (confidence='low') sẽ KHÔNG bị quét lại, tránh tốn OCR lặp vô ích.
+Muốn quét lại cả các dòng confidence='low' (vd sau khi sửa regex/tune OCR):
+    python ocr/extract_contract_codes.py --include-low
+
 Pipeline chạy song song 2 lớp để không phải chờ tuần tự tải-rồi-OCR từng file
 một (xem Claude.md mục "hiệu năng"): 1 thread pool tải PDF từ Drive (I/O-bound)
 đẩy kết quả sang 1 process pool chạy OCR (CPU-bound, PaddleOCR không giải
@@ -178,15 +183,25 @@ def main():
         default=3,
         help="Số thread tải PDF từ Drive chạy song song (mặc định 3, tải chỉ ~4s/file nên không cần nhiều).",
     )
+    parser.add_argument(
+        "--include-low",
+        action="store_true",
+        help="Quét lại cả các dòng đã quét nhưng confidence='low' (mặc định bỏ qua, "
+             "chỉ quét dòng chưa từng quét/bị crash - xem docstring đầu file).",
+    )
     args = parser.parse_args()
 
-    total, done = count_status(nhom=args.nhom)
+    total, attempted, attempted_low = count_status(nhom=args.nhom)
+    chua_quet = total - attempted
+    da_xong = attempted - attempted_low
     pham_vi = f'nhóm "{args.nhom}"' if args.nhom else "toàn bộ"
-    print(f"Phạm vi {pham_vi}: {total} hợp đồng, {done} đã có contract_code từ trước (bỏ qua), "
-          f"{total - done} còn thiếu.")
+    print(f"Phạm vi {pham_vi}: {total} hợp đồng | {chua_quet} chưa từng quét | "
+          f"{attempted_low} đã quét confidence thấp"
+          f"{' (sẽ quét lại vì có --include-low)' if args.include_low else ' (bỏ qua, dùng --include-low để quét lại)'}"
+          f" | {da_xong} đã xong (confidence cao).")
 
     creds = load_credentials()
-    rows = fetch_pending(limit=args.limit, nhom=args.nhom)
+    rows = fetch_pending(limit=args.limit, nhom=args.nhom, include_low=args.include_low)
     print(f"Sẽ xử lý {len(rows)} hợp đồng trong lượt chạy này "
           f"({args.ocr_workers} OCR worker, {args.fetch_threads} fetch thread).")
 
