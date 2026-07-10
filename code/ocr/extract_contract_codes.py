@@ -7,10 +7,13 @@ Chạy hết:
 Chỉ 1 nhóm cụ thể (giống --nhom bên crawl/), có thể kèm --limit để test mẫu:
     python ocr/extract_contract_codes.py --nhom "KHU CÔNG NGHIỆP"
 
-Mặc định CHỈ quét các dòng chưa từng quét (hoặc quét bị crash) - đã quét mà
-không ra mã (confidence='low') sẽ KHÔNG bị quét lại, tránh tốn OCR lặp vô ích.
-Muốn quét lại cả các dòng confidence='low' (vd sau khi sửa regex/tune OCR):
-    python ocr/extract_contract_codes.py --include-low
+Mặc định CHỈ quét các dòng chưa từng quét (hoặc quét bị crash), tránh tốn OCR
+lặp vô ích cho các dòng đã có kết luận từ trước. Có 3 mức `--rescan` LỒNG NHAU
+(mức sau bao luôn mức trước, xem comment trong postgres_store.py):
+    python ocr/extract_contract_codes.py                    # unscanned (mặc định): chưa từng quét/bị crash
+    python ocr/extract_contract_codes.py --rescan no_code    # + đã quét nhưng không ra mã nào
+    python ocr/extract_contract_codes.py --rescan low        # + đã quét, có mã nhưng chưa chắc (rộng nhất)
+Dùng `no_code`/`low` khi đã sửa regex/tune OCR và muốn quét lại có chọn lọc.
 
 Pipeline chạy song song 2 lớp để không phải chờ tuần tự tải-rồi-OCR từng file
 một (xem Claude.md mục "hiệu năng"): 1 thread pool tải PDF từ Drive (I/O-bound)
@@ -45,10 +48,11 @@ from postgres_store import count_status, fetch_pending, update_contract_code_cur
 
 
 def _ocr_task(pdf_bytes):
-    """Chạy trong worker process riêng (fork). extract() tự lazy-init
-    PaddleOCR singleton lần đầu gọi TRONG process này - process cha không
-    được gọi extract()/header_ocr trước khi tạo pool, nếu không fork sẽ mang
-    theo model đã load dở/không an toàn giữa các process."""
+    """Chạy trong worker process riêng (fork trên Linux/WSL/Mac, spawn trên
+    Windows - xem run_pipeline). extract() tự lazy-init PaddleOCR singleton
+    lần đầu gọi TRONG process này - process cha không được gọi
+    extract()/header_ocr trước khi tạo pool, nếu không fork sẽ mang theo
+    model đã load dở/không an toàn giữa các process."""
     t0 = time.perf_counter()
     try:
         code, source, confidence, dinh_kem = extract(pdf_bytes)
@@ -72,9 +76,19 @@ def run_pipeline(rows, creds, ocr_workers, fetch_threads):
     Ghi DB + in tiến độ từ 1 chỗ duy nhất (process chính) để tránh phải chia
     sẻ connection Postgres giữa các worker process."""
     # paddleocr mặc định cpu_threads=10/instance - phải ghim =1 trước khi
-    # fork worker, nếu không N process OCR song song sẽ tranh nhau CPU.
+    # fork/spawn worker, nếu không N process OCR song song sẽ tranh nhau CPU.
     os.environ["OCR_CPU_THREADS"] = "1"
-    ctx = mp.get_context("fork")
+    # "fork" (copy-on-write, khởi động worker nhanh) không tồn tại trên Windows -
+    # Python multiprocessing ở đó chỉ có "spawn" (re-import cả module trong
+    # process con). Chọn theo platform để code chạy được cả 2 nơi: giữ "fork"
+    # trên Linux/WSL/Mac (nhanh hơn, hành vi không đổi so với trước), dùng
+    # "spawn" trên Windows. "spawn" chỉ chậm hơn lúc KHỞI ĐỘNG worker (re-import
+    # paddleocr) vì model đã lazy-load 1 lần/worker (không phải mỗi file, xem
+    # _ocr_task) - không ảnh hưởng throughput ổn định sau đó. Yêu cầu để spawn
+    # an toàn (đã có sẵn, không cần sửa gì thêm): entrypoint có
+    # `if __name__ == "__main__":` (cuối file) và _ocr_task là hàm module-level
+    # (picklable).
+    ctx = mp.get_context("spawn" if sys.platform == "win32" else "fork")
     window = ocr_workers * 2 + fetch_threads
 
     conn = psycopg2.connect(**PG_CONFIG)
@@ -184,24 +198,30 @@ def main():
         help="Số thread tải PDF từ Drive chạy song song (mặc định 3, tải chỉ ~4s/file nên không cần nhiều).",
     )
     parser.add_argument(
-        "--include-low",
-        action="store_true",
-        help="Quét lại cả các dòng đã quét nhưng confidence='low' (mặc định bỏ qua, "
-             "chỉ quét dòng chưa từng quét/bị crash - xem docstring đầu file).",
+        "--rescan",
+        choices=["unscanned", "no_code", "low"],
+        default="unscanned",
+        help="Mức quét lại, LỒNG NHAU (mức sau bao luôn mức trước) - mặc định "
+             "'unscanned' (chỉ chưa-từng-quét/bị crash). 'no_code' quét lại thêm "
+             "các dòng đã quét nhưng không ra mã nào. 'low' quét lại thêm cả các "
+             "dòng đã có mã nhưng chưa chắc (rộng nhất). Xem docstring đầu file.",
     )
     args = parser.parse_args()
 
-    total, attempted, attempted_low = count_status(nhom=args.nhom)
-    chua_quet = total - attempted
-    da_xong = attempted - attempted_low
+    total, chua_quet, low_khong_ma, low_co_ma = count_status(nhom=args.nhom)
+    da_xong = total - chua_quet - low_khong_ma - low_co_ma
     pham_vi = f'nhóm "{args.nhom}"' if args.nhom else "toàn bộ"
+    se_quet = {
+        "unscanned": chua_quet,
+        "no_code": chua_quet + low_khong_ma,
+        "low": chua_quet + low_khong_ma + low_co_ma,
+    }[args.rescan]
     print(f"Phạm vi {pham_vi}: {total} hợp đồng | {chua_quet} chưa từng quét | "
-          f"{attempted_low} đã quét confidence thấp"
-          f"{' (sẽ quét lại vì có --include-low)' if args.include_low else ' (bỏ qua, dùng --include-low để quét lại)'}"
-          f" | {da_xong} đã xong (confidence cao).")
+          f"{low_khong_ma} đã quét không ra mã | {low_co_ma} đã quét có mã nhưng chưa chắc | "
+          f"{da_xong} đã xong (confidence cao) || --rescan={args.rescan} sẽ xử lý {se_quet} dòng.")
 
     creds = load_credentials()
-    rows = fetch_pending(limit=args.limit, nhom=args.nhom, include_low=args.include_low)
+    rows = fetch_pending(limit=args.limit, nhom=args.nhom, rescan=args.rescan)
     print(f"Sẽ xử lý {len(rows)} hợp đồng trong lượt chạy này "
           f"({args.ocr_workers} OCR worker, {args.fetch_threads} fetch thread).")
 

@@ -29,29 +29,49 @@ ALTER TABLE contracts ADD COLUMN IF NOT EXISTS dinh_kem_hop_dong_so TEXT;
 ALTER TABLE contracts DROP COLUMN IF EXISTS raw_header_text;
 """
 
-# contract_code IS NULL gộp chung 2 tình huống khác hẳn nhau: (1) đã quét
-# xong nhưng không ra mã - extract() vẫn trả confidence='low' cho case này
-# (xem code_extractor.py cuối extract()), không phải NULL; (2) chưa từng
-# quét/quét bị crash (extract_error/fetch_error/worker_crashed) - confidence
-# NULL thật. Mặc định chỉ lấy nhóm (2) để không tốn OCR quét lại các dòng đã
-# có kết luận "low" từ trước; INCLUDE_LOW nới thêm nhóm (1), dùng khi chủ
-# động muốn quét lại (vd sau khi sửa regex/tune OCR).
-FETCH_PENDING = """
+# 3 mức "cần quét lại", LỒNG NHAU thật sự (unscanned ⊂ no_code ⊂ low - xem
+# fetch_pending()):
+#   1. unscanned: chưa từng quét/quét bị crash (extract_error/fetch_error/
+#      worker_crashed) - contract_code_confidence NULL thật, chưa có kết luận gì.
+#   2. no_code: (1) + đã quét nhưng KHÔNG ra được mã nào - extract() vẫn trả
+#      confidence='low' cho case này (xem code_extractor.py cuối extract()),
+#      không phải NULL, nhưng contract_code cũng NULL. Tương đương hệt
+#      "contract_code IS NULL" (filter gốc trước khi tách mức) vì confidence
+#      chỉ NULL hoặc 'low' khi code NULL, không bao giờ 'high' (mọi nhánh trả
+#      "high" trong extract() đều đi kèm code khác NULL - đã audit code).
+#   3. low: (2) + đã quét, CÓ mã nhưng cross-check ngày không khớp (confidence
+#      'low' dù contract_code khác NULL) - filter gốc "contract_code IS NULL"
+#      KHÔNG bao giờ bắt được nhóm này vì code đã có giá trị.
+# Mặc định chỉ lấy mức 1 (rẻ nhất, không tốn OCR quét lại kết luận đã có).
+FETCH_PENDING_UNSCANNED = """
 SELECT drive_file_id, file_path
 FROM contracts
 WHERE contract_code_confidence IS NULL
 """
 
-FETCH_PENDING_INCLUDE_LOW = """
+FETCH_PENDING_NO_CODE = """
 SELECT drive_file_id, file_path
 FROM contracts
-WHERE contract_code_confidence IS NULL OR contract_code_confidence = 'low'
+WHERE contract_code IS NULL
 """
+
+FETCH_PENDING_LOW = """
+SELECT drive_file_id, file_path
+FROM contracts
+WHERE (contract_code_confidence IS NULL OR contract_code_confidence = 'low')
+"""
+
+_FETCH_PENDING_BY_RESCAN = {
+    "unscanned": FETCH_PENDING_UNSCANNED,
+    "no_code": FETCH_PENDING_NO_CODE,
+    "low": FETCH_PENDING_LOW,
+}
 
 COUNT_STATUS = """
 SELECT COUNT(*),
-       COUNT(contract_code_confidence),
-       COUNT(*) FILTER (WHERE contract_code_confidence = 'low')
+       COUNT(*) FILTER (WHERE contract_code_confidence IS NULL),
+       COUNT(*) FILTER (WHERE contract_code_confidence = 'low' AND contract_code IS NULL),
+       COUNT(*) FILTER (WHERE contract_code_confidence = 'low' AND contract_code IS NOT NULL)
 FROM contracts
 """
 
@@ -107,16 +127,17 @@ def save(rows):
     return inserted, updated
 
 
-def fetch_pending(limit=None, nhom=None, include_low=False):
+def fetch_pending(limit=None, nhom=None, rescan="unscanned"):
     """Lấy các dòng cần quét (drive_file_id, file_path).
     nhom=None -> lấy tất cả nhóm; nhom="KHU CÔNG NGHIỆP" -> chỉ nhóm đó
     (so khớp ILIKE, không cần gõ đúng y hệt, giống --nhom bên crawl/).
     limit=None -> lấy hết (trong phạm vi nhom đã lọc).
-    include_low=False (mặc định) -> chỉ chưa-từng-quét/bị crash
-    (contract_code_confidence IS NULL). include_low=True -> quét lại cả các
-    dòng đã có kết luận confidence='low' (xem comment FETCH_PENDING_INCLUDE_LOW)."""
+    rescan: 1 trong 3 mức LỒNG NHAU (xem comment các hằng FETCH_PENDING_* phía
+    trên) - "unscanned" (mặc định, rẻ nhất, chỉ chưa-từng-quét/bị crash),
+    "no_code" (+ đã quét nhưng không ra mã nào), "low" (+ đã quét có mã nhưng
+    chưa chắc - rộng nhất)."""
     ensure_schema()
-    query, params = (FETCH_PENDING_INCLUDE_LOW if include_low else FETCH_PENDING), []
+    query, params = _FETCH_PENDING_BY_RESCAN[rescan], []
     if nhom is not None:
         query += " AND nhom ILIKE %s"
         params.append(f"%{nhom}%")
@@ -133,11 +154,10 @@ def fetch_pending(limit=None, nhom=None, include_low=False):
 
 
 def count_status(nhom=None):
-    """Đếm (tổng số hợp đồng, số đã quét ít nhất 1 lần, số đã quét nhưng
-    confidence thấp) theo nhom hoặc toàn bộ. COUNT(contract_code_confidence)
-    chỉ đếm giá trị NOT NULL (SQL chuẩn) -> ra thẳng số đã quét (kể cả
-    confidence='low', không kể chưa-từng-quét/crash). Dùng để báo lại kiểu
-    "N chưa từng quét | M đã quét confidence thấp | K đã xong"."""
+    """Đếm theo nhom hoặc toàn bộ, trả về (tổng, chưa_quet, low_khong_ma,
+    low_co_ma) - đúng 4 nhóm rạch ròi theo 3 ranh giới mức rescan (xem comment
+    COUNT_STATUS/FETCH_PENDING_* phía trên). "đã xong" (confidence='high') suy
+    ra ở phía gọi = tổng - 3 số còn lại, không cần đếm riêng."""
     ensure_schema()
     query, params = COUNT_STATUS, []
     if nhom is not None:
@@ -146,9 +166,9 @@ def count_status(nhom=None):
     conn = psycopg2.connect(**PG_CONFIG)
     with conn, conn.cursor() as cur:
         cur.execute(query, params)
-        total, attempted, attempted_low = cur.fetchone()
+        total, chua_quet, low_khong_ma, low_co_ma = cur.fetchone()
     conn.close()
-    return total, attempted, attempted_low
+    return total, chua_quet, low_khong_ma, low_co_ma
 
 
 def update_contract_code(drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None):
