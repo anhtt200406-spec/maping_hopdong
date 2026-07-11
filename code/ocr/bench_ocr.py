@@ -11,7 +11,7 @@ khi có số liệu xác nhận cấu hình nào thắng (xem plan mục "Thứ 
 Vẫn gọi thẳng code_extractor.extract() thật (không viết lại logic regex/
 cross-check) để so sánh đúng hành vi pipeline thật, không phải bản rút gọn.
 
-Cách dùng (chạy từ code/, cần .venv312 active):
+Cách dùng (chạy từ code/, cần .venv active):
     # 1. Tải + cache N PDF thật 1 lần (chỉ cần chạy lại nếu muốn đổi mẫu)
     python ocr/bench_ocr.py cache --n 20
 
@@ -27,7 +27,7 @@ Cách dùng (chạy từ code/, cần .venv312 active):
     python ocr/bench_ocr.py compare
 
 Lưu ý: đổi paddlepaddle version (mục 1 trong plan) không toggle được bằng
-tham số script - phải tự `pip install paddlepaddle==X` trong .venv312 rồi
+tham số script - phải tự `pip install paddlepaddle==X` trong .venv rồi
 chạy lại `run --config mkldnn_on` để so sánh trước/sau downgrade.
 """
 

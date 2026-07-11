@@ -3,7 +3,7 @@ Claude.md
 credentials.json
 token.json
 __pycache__/
-.venv312/
+.venv/
 .bench_cache/
 code/ocr/test_input/*.pdf
 !code/ocr/test_input/.gitkeep
