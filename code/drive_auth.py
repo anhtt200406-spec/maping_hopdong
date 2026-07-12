@@ -42,7 +42,7 @@ def load_credentials():
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w") as f:
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return creds
 

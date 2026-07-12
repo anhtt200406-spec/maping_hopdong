@@ -81,7 +81,7 @@ def _cache_samples(n):
         else:
             print(f"  đã có sẵn (bỏ qua tải lại): {file_path}")
         manifest.append({"drive_file_id": drive_file_id, "file_path": file_path})
-    with open(MANIFEST_FILE, "w") as f:
+    with open(MANIFEST_FILE, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"Đã cache {len(manifest)} PDF vào {PDF_DIR}")
 
@@ -91,7 +91,7 @@ def _load_manifest():
         raise SystemExit(
             "Chưa có mẫu nào - chạy `python ocr/bench_ocr.py cache --n 20` trước."
         )
-    with open(MANIFEST_FILE) as f:
+    with open(MANIFEST_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -181,7 +181,7 @@ def _run_config(name):
               f"({entry['wall_s']:.1f}s) {row['file_path']} -> {entry.get('code') or '???'}")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(os.path.join(RESULTS_DIR, f"{name}.json"), "w") as f:
+    with open(os.path.join(RESULTS_DIR, f"{name}.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"Đã ghi kết quả '{name}' vào {RESULTS_DIR}/{name}.json")
 
@@ -204,7 +204,7 @@ def _compare(configs=None):
     for name in configs:
         path = os.path.join(RESULTS_DIR, f"{name}.json")
         if os.path.exists(path):
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 loaded[name] = json.load(f)
     if not loaded:
         print("Chưa có kết quả nào - chạy `run`/`sweep` trước.")
@@ -261,4 +261,6 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     main()
