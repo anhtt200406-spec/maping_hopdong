@@ -7,57 +7,47 @@ import fitz  # PyMuPDF
 
 import header_ocr
 
-# 3 format mã đã gặp thật (xem Claude.md mục 12):
-#   "2503/2025/HĐDV/AGRIBANK-TOQUA"  - số/năm/loại/bên-bên (có "/" trước loại)
-#   "2003/2026/TOQUA-ANTSOMI"        - số/năm/bên-bên (không có loại, hợp đồng NDA)
-#   "2703/2025HĐNT/URBOX-NVC"        - số/năm+loại dính liền (không có "/" giữa năm và loại)
-# -> phần loại là optional, và nếu có thì "/" đứng trước nó cũng optional.
-# Luôn bắt buộc phần "bên-bên" có ít nhất 1 dấu "-" để phân biệt với 1 chuỗi
+# Mục đích: bắt mã hợp đồng chuẩn Việt Nam, "loại" là phần optional.
+# Dữ liệu - 3 biến thể đã gặp thật:
+#   "2503/2025/HĐDV/AGRIBANK-TOQUA"   số/năm/loại/bên-bên
+#   "2003/2026/TOQUA-ANTSOMI"         số/năm/bên-bên (không loại, hợp đồng NDA)
+#   "2703/2025HĐNT/URBOX-NVC"         năm+loại dính liền, không "/"
+# Lưu ý: bắt buộc phần "bên-bên" có dấu "-" để không khớp nhầm 1 chuỗi
 # chữ/số bất kỳ đứng sau 2 mốc số/năm.
 CODE_RE = re.compile(
     r"(\d{1,4}/\d{4}(?:/?[A-ZĐ]+)?/[A-ZĐ0-9]+(?:-[A-ZĐ0-9]+)+)"
 )
 
-# Định dạng mã kiểu ngân hàng gặp thật ở SMBC: KHÔNG có ngày/tháng/năm ở đầu
-# như 3 format trên, mà nối 4 phần bằng dấu gạch ngang DÀI "–" (U+2013, KHÁC
-# hẳn "-" thường U+002D), vd dòng "Số:" thật:
-#   "VPBSMBCFC – URBOX – 25 – PR17646"
-# Chỉ dùng ở nhánh đã neo "Số:" (không dùng cho vòng fallback quét mọi dòng ở
-# _find_code_line) để tránh khớp nhầm câu văn bất kỳ có dấu gạch ngang. Vì
-# không có ngày/tháng để cross-check nên luôn rơi vào confidence=low (soi
-# tay) dù bắt được - an toàn, không tự nhận "high" bừa cho định dạng lạ này.
+# Mục đích: mã kiểu SMBC - nối 4 phần bằng gạch ngang DÀI "–" (U+2013, khác
+# "-" thường), không có ngày/tháng nên không cross-check được.
+# Dữ liệu: "VPBSMBCFC – URBOX – 25 – PR17646".
+# Lưu ý: chỉ dùng ở nhánh đã neo "Số:", không dùng ở fallback quét mọi dòng -
+# định dạng gạch ngang trần rất dễ khớp nhầm câu văn thường. Luôn confidence=low.
 CODE_RE_DASH = re.compile(
     r"([A-ZĐ0-9]+[-–][A-ZĐ0-9]+[-–]\d{1,4}[-–][A-ZĐ0-9]+)"
 )
 
-# Định dạng mã nội bộ riêng của LG Electronics Việt Nam (LGEVH), gặp thật:
-#   "040/EAVH-MKT-20240110-0002/C2024001431"
-# số thứ tự / bộ-phận-bộ-phận-ngày(YYYYMMDD)-số-phụ / mã-tham-chiếu-C. KHÔNG có
-# ngày/tháng dạng ddmm ở đầu như 3 format chuẩn nên không cross-check được với
-# dòng ngày -> luôn confidence=low dù bắt được, giống CODE_RE_DASH. Chỉ 1 mẫu
-# thật đã soi (xem lịch sử sửa) - phần \d{8} (ngày YYYYMMDD) là điểm neo chặt
-# nhất giúp tránh khớp nhầm, nếu gặp thêm biến thể khác cần mở rộng thêm.
+# Mục đích: mã nội bộ riêng của LG Electronics VN (LGEVH).
+# Dữ liệu: "040/EAVH-MKT-20240110-0002/C2024001431" (số/bộ phận-ngày YYYYMMDD-
+# số phụ/mã tham chiếu). Không cross-check được ngày -> luôn confidence=low.
+# Lưu ý: mới soi 1 mẫu thật, \d{8} là điểm neo chính - gặp biến thể khác thì mở rộng thêm.
 CODE_RE_LG = re.compile(
     r"(\d{1,4}/[A-ZĐ]+-[A-ZĐ]+-\d{8}-\d{3,4}/C\d{8,11})"
 )
 
-# Biến thể thiếu hẳn phần năm (không phải OCR đọc sót - văn bản gốc chỉ có
-# ngày+tháng/loại/bên-bên, không có nhóm 4 số năm), gặp thật ở SHINHAN BẮC
-# NINH: "0303/HĐ/URBOX-SHINHANBACNINH" (ký ngày 03/03/2026). Bắt buộc phải có
-# "loại" (khác CODE_RE coi loại là optional) để giảm khớp nhầm vì mất hẳn 1
-# nhóm số so với CODE_RE - không có "loại" đứng giữa 2 dấu "/" thì độ đặc thù
-# quá thấp. Vẫn cross-check được với dòng ngày như bình thường vì
-# _code_matches_date() chỉ so nhóm đầu tiên (ddmm), không đụng tới phần năm
-# (không có).
+# Mục đích: biến thể thiếu hẳn năm (văn bản gốc vốn vậy, không phải OCR sót),
+# gặp thật ở SHINHAN BẮC NINH.
+# Dữ liệu: "0303/HĐ/URBOX-SHINHANBACNINH" (ký 03/03).
+# Lưu ý: "loại" ở đây bắt buộc (khác CODE_RE coi optional) vì thiếu 1 nhóm số
+# rồi, không neo thêm thì độ đặc thù quá thấp. Vẫn cross-check ngày bình thường.
 CODE_RE_NOYEAR = re.compile(
     r"(\d{1,4}/[A-ZĐ]+/[A-ZĐ0-9]+(?:-[A-ZĐ0-9]+)+)"
 )
 
-# Biến thể ngày+tháng+năm gộp liền 8 chữ số, không có "/" phân tách (khác hẳn
-# 3 format chuẩn), gặp thật ở G HOMES (text layer PDF thật, không phải OCR):
-# "08012025/GHOMES-URBOX" (ký ngày 08/01/2025, "08012025" = ddmmyyyy liền).
-# _code_matches_date() phải tự nhận diện prefix 8 số này (xem hàm đó) vì
-# logic so sánh ddmm mặc định giả định prefix chỉ dài tối đa 4 số.
+# Mục đích: ngày+tháng+năm gộp liền 8 số, không "/" - gặp thật ở G HOMES (text
+# layer, không OCR).
+# Dữ liệu: "08012025/GHOMES-URBOX" (08/01/2025 viết liền).
+# Lưu ý: _code_matches_date() phải tự cắt 4 số đầu của prefix 8 số này để so ddmm.
 CODE_RE_COMPACT8 = re.compile(
     r"(\d{8}/[A-ZĐ0-9]+(?:-[A-ZĐ0-9]+)+)"
 )
@@ -68,54 +58,29 @@ DATE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Neo vào ĐẦU dòng (^): dòng "Số:" thật luôn đứng đầu dòng riêng. Nếu không
-# neo, regex còn khớp cả cụm "số:" nằm giữa câu kiểu "Căn cứ Hợp đồng số:
-# 1506/2019/..." (mã hợp đồng KHÁC được viện dẫn, không phải mã của chính
-# file này) - đã bắt được lỗi này khi soi 1 file thật, xem Claude.md mục 12.
-#
-# [oòóỏõọôồốổỗộő]: "ố" (có dấu sắc, chữ thật trong "Số") KHÁC hẳn "ô"/"o" - PDF
-# có text layer giữ dấu chuẩn sẽ không khớp nếu chỉ liệt kê "ôo". Liệt kê đủ cả
-# họ "o" tiếng Việt (o/ô x 6 thanh) vì OCR có thể làm lệch dấu sang bất kỳ biến
-# thể nào - gặp thật "ó" (o+sắc, KHÁC "ố" là ô+sắc) ở 1 file nhóm BẢO HIỂM, và
-# "ő" (o 2 dấu sắc kiểu Hungary, không tồn tại trong tiếng Việt - OCR tự bịa ra
-# khi đọc nhầm dấu của "ố") ở 1 Phụ lục LG Electronics. SO_LINE_RE cũ bị bỏ sót
-# cả 2 vì chỉ liệt kê "ôoố".
-# (?:/\s*no\.?\s*)?: nhiều hợp đồng song ngữ ghi "Số/ No.:" thay vì "Số:".
-# \(?\s*: dòng "Số:" đôi khi nằm trong ngoặc đơn, vd "(Số: 2607/2024/...)" ở
-# VIETINBANK - cho phép 1 dấu "(" tuỳ chọn trước "S". Dấu ")" ở cuối không cần
-# xử lý riêng vì CODE_RE tự dừng khớp trước ký tự không hợp lệ.
-# \b ngay sau lớp nguyên âm: BẮT BUỘC, nếu không "Số" sẽ khớp nhầm cả từ tiếng
-# Anh "SOCIALIST" (trong tiêu đề song ngữ "CỘNG HÒA...374/SOCIALIST REPUBLIC OF
-# VIETNAM" có ở hầu hết hợp đồng) - "S"+"O" khớp [oòó...] vì re.IGNORECASE
-# không phân biệt hoa/thường, khiến _has_so_line() tưởng nhầm đã thấy dòng
-# "Số:" nên bỏ qua escalation crop 30%->55%, mất luôn dòng mã thật nằm dưới -
-# gặp thật ở Phụ lục HYOSUNG ĐỒNG NAI NYLON. \b đảm bảo ký tự theo sau nguyên
-# âm không phải chữ cái (dấu câu/khoảng trắng) - "Số:"/"Số " qua được,
-# "SOCIALIST" (theo sau là "C") thì không.
+# Mục đích: nhận diện dòng "Số:" mở đầu mã hợp đồng, phải đứng đầu dòng
+# (tránh khớp nhầm câu "Căn cứ hợp đồng số: ..." viện dẫn hợp đồng khác).
+# Dữ liệu: "Số:", "(Số: ...)", "Số/No.:", và biến thể OCR đọc lệch dấu
+# (ố/ó/ő - gặp thật ở BẢO HIỂM, LG).
+# Lưu ý: \b sau lớp nguyên âm là bắt buộc - thiếu nó regex ăn luôn chữ
+# "SOCIALIST" trong quốc hiệu song ngữ, mất mã thật (đã dính bug này rồi, đừng bỏ).
 SO_LINE_RE = re.compile(r"^\s*\(?\s*S[oòóỏõọôồốổỗộő]\b\s*(?:/\s*no\.?\s*)?:?\s*(.+)", re.IGNORECASE)
 
-# OCR đôi khi làm RỚT LUÔN nguyên âm giữa "S" và ":" (ra "S:" trần, gặp thật ở
-# cả SMBC lẫn SONADEZI - xem parse_code_dash/BLANK_NUM_RE bên dưới) - SO_LINE_RE
-# trên KHÔNG khớp vì bắt buộc phải có 1 trong [ôoố]. Không thể bỏ hẳn yêu cầu
-# này (sẽ khớp nhầm mọi từ đầu dòng bắt đầu bằng "S" như "Sáng ngày...") nên
-# tách pattern riêng: chỉ chấp nhận thiếu nguyên âm KHI có dấu ":" bắt buộc
-# ngay sau (không optional như SO_LINE_RE) - đủ hẹp để không khớp nhầm. \(?\s*
-# đầu dòng: cùng lý do dấu ngoặc đơn ở SO_LINE_RE trên.
+# Mục đích: bắt trường hợp OCR rớt mất nguyên âm giữa "S" và ":" (ra "S:"
+# trần), gặp thật ở SMBC/SONADEZI - SO_LINE_RE không khớp vì thiếu nguyên âm.
+# Lưu ý: bắt buộc phải có ":" ngay sau "S", nếu không sẽ khớp nhầm mọi từ bắt
+# đầu bằng "S" như "Sáng ngày...".
 SO_LINE_NOVOWEL_RE = re.compile(r"^\s*\(?\s*S\s*(?:/\s*no\.?\s*)?:\s*(.+)", re.IGNORECASE)
 
-# OCR đôi khi rớt CẢ nguyên âm LẪN dấu ":" (khác SO_LINE_NOVOWEL_RE ở trên vẫn
-# còn ":"), ra "S" trần dính khoảng trắng rồi số luôn - gặp thật ở SHINHAN BẮC
-# NINH: "S 0303/HD/URBOX-SHINHANBACNINH". Case này đã được Claude.md mục 6 ghi
-# nhận "chấp nhận rơi vào soi tay, chưa có pattern riêng" - giờ có bằng chứng
-# thật để viết. Không thể nới lỏng SO_LINE_NOVOWEL_RE bỏ luôn dấu ":" (sẽ khớp
-# nhầm "Sáng ngày...") nên bắt buộc ngay sau khoảng trắng phải là số 3-4 chữ số
-# rồi dấu "/" - đủ hẹp để không khớp nhầm từ tiếng Việt thường bắt đầu bằng "S".
+# Mục đích: OCR rớt cả nguyên âm lẫn ":", chỉ còn "S" + khoảng trắng + số -
+# gặp thật ở SHINHAN BẮC NINH: "S 0303/HD/URBOX-SHINHANBACNINH".
+# Lưu ý: bắt buộc số 3-4 chữ số + "/" ngay sau, để không khớp nhầm từ tiếng
+# Việt thường bắt đầu bằng "S".
 SO_LINE_NOVOWEL_NOCOLON_RE = re.compile(r"^\s*S\s+(\d{3,4}/.+)", re.IGNORECASE)
 
-# Phụ lục/văn bản đính kèm thường KHÔNG có "Số:" riêng của bản thân nó, mà chỉ
-# nói đính kèm/căn cứ theo 1 "hợp đồng nguyên tắc" khác - phải lấy mã hợp đồng
-# đó làm contract_code (không có mã riêng độc lập để dùng). Không neo đầu
-# dòng vì cụm này thường nằm giữa câu/trong ngoặc, vd:
+# Mục đích: Phụ lục/văn bản đính kèm thường không có "Số:" riêng, chỉ nhắc
+# tới hợp đồng nguyên tắc khác - lấy mã của hợp đồng đó làm contract_code.
+# Dữ liệu (không neo đầu dòng vì cụm này thường nằm giữa câu/trong ngoặc):
 #   "(Đính kèm Hợp đồng nguyên tắc số: 2703/2025HĐNT/URBOX-NVC)"
 #   "Căn cứ theo Hợp đồng nguyên tắc số 2703/2025HĐNT/URBOX-NVC..."
 ATTACHED_HINT_RE = re.compile(r"đính\s*k[eè]m|nguy[eê]n\s*t[aă]c", re.IGNORECASE)
@@ -155,15 +120,12 @@ def parse_code_compact8(text):
     return m.group(1) if m else None
 
 
-# "Số:" đôi khi bị OCR ra thiếu hẳn phần số (hiện thành dấu chấm placeholder)
-# khi số thật được viết/đóng dấu tách khỏi vị trí in sẵn trên template, OCR
-# đọc thành 1 dòng riêng ngay TRƯỚC dòng "Số:" - gặp thật ở SONADEZI, 2 dòng
-# liên tiếp:
+# Mục đích: số hợp đồng thật bị viết tách khỏi template in sẵn, OCR đọc
+# thành 1 dòng riêng NGAY TRƯỚC dòng "Số:" - gặp thật ở SONADEZI:
 #   '1812'
 #   'S: .../2025/HD/URBOX-SONADEZILT'
-# -> thử ghép số 3-4 chữ số đứng ngay trước vào chỗ trống rồi parse lại. Vẫn
-# phải qua cross-check ngày ở extract() như bình thường (không phải luật "tin
-# luôn"), chỉ là 1 cách dựng lại chuỗi trước khi thử regex.
+# Lưu ý: ghép số đứng trước vào chỗ trống rồi parse lại, vẫn phải qua
+# cross-check ngày như bình thường.
 BLANK_NUM_RE = re.compile(r"^\.{2,}/")
 STANDALONE_DDMM_RE = re.compile(r"^\d{3,4}$")
 
@@ -185,13 +147,11 @@ def _find_code_line(lines):
                 code = parse_code(rest.replace("...", neighbor, 1))
                 if code:
                     return code
-    # fallback: có thể OCR không tách được "Số:" ở đầu dòng - thử match thẳng
-    # trên toàn bộ dòng. Kém tin cậy hơn (có thể trúng dòng "Căn cứ" viện dẫn
-    # hợp đồng khác) nên luôn phải đi qua cross-check ngày ở extract(). Bỏ qua
-    # hẳn dòng có dấu hiệu "đính kèm"/"nguyên tắc" - đó chắc chắn là mã hợp
-    # đồng KHÁC (xử lý riêng ở _find_attached_code), không phải mã của file này.
-    # Không dùng parse_code_dash ở đây (xem comment CODE_RE_DASH) - định dạng
-    # gạch ngang không neo "Số:" quá dễ khớp nhầm câu văn bất kỳ.
+    # Fallback: không tách được dòng "Số:" thì quét thẳng mọi dòng - kém tin
+    # cậy hơn nên luôn phải qua cross-check ngày. Bỏ qua dòng "đính kèm"/
+    # "nguyên tắc" (đó là mã hợp đồng khác, xử lý ở _find_attached_code).
+    # Không dùng parse_code_dash ở đây - gạch ngang trần không neo "Số:" quá
+    # dễ khớp nhầm câu văn bất kỳ.
     for line in lines:
         if ATTACHED_HINT_RE.search(line):
             continue
@@ -202,12 +162,10 @@ def _find_code_line(lines):
 
 
 def _has_so_line(lines):
-    """Kiểm tra có dòng nào neo được "Số:" không (không quan tâm parse ra mã
-    hay chưa) - dùng để quyết định có đáng thử crop lớn hơn không: nếu ĐÃ thấy
-    dòng "Số:" nhưng chỉ là parse thất bại (định dạng lạ), crop lại vẫn ra
-    đúng dòng đó, tăng crop không giúp gì; chỉ đáng thử lại khi dòng "Số:"
-    HOÀN TOÀN vắng mặt (khả năng cao nằm dưới rìa crop, gặp thật ở vài Phụ lục
-    tiêu đề song ngữ dài của LG Electronics - xem extract())."""
+    """Có thấy dòng "Số:" không (không quan tâm parse ra mã hay chưa) - dùng
+    để quyết định có đáng crop lại to hơn không. Thấy dòng nhưng parse fail
+    thì crop lại cũng vô ích; chỉ đáng thử khi dòng "Số:" vắng mặt hẳn (khả
+    năng nằm ngoài rìa crop, gặp ở vài Phụ lục tiêu đề song ngữ dài của LG)."""
     return any(SO_LINE_RE.match(line) or SO_LINE_NOVOWEL_RE.match(line)
                or SO_LINE_NOVOWEL_NOCOLON_RE.match(line) for line in lines)
 
@@ -238,9 +196,8 @@ def _code_matches_date(code, ddmm):
     if not code or not ddmm:
         return False
     prefix = code.split("/")[0]
-    # Định dạng CODE_RE_COMPACT8 gộp ngày+tháng+năm liền thành 8 số (vd
-    # "08012025"), 4 số đầu mới là phần ddmm cần so - nếu so nguyên cả 8 số
-    # với ddmm (4 số) sẽ luôn lệch dù đúng.
+    # CODE_RE_COMPACT8 gộp liền 8 số (ddmmyyyy) - chỉ so 4 số đầu (ddmm),
+    # so nguyên 8 số sẽ luôn lệch dù đúng.
     if len(prefix) == 8 and prefix.isdigit():
         prefix = prefix[:4]
     return prefix.zfill(4) == ddmm or prefix == ddmm
@@ -255,58 +212,55 @@ def _text_layer_lines(pdf_bytes):
 
 
 def extract(pdf_bytes):
-    """Trả về (contract_code, source, confidence, dinh_kem_hop_dong_so).
-    contract_code=None nghĩa là không bóc được gì, để dành soi tay - không bịa số.
-    dinh_kem_hop_dong_so chỉ có giá trị khi contract_code là mã MƯỢN từ hợp
-    đồng nguyên tắc khác (văn bản này không có Số: riêng, vd Phụ lục).
+    """Bóc mã hợp đồng từ 1 PDF: thử text layer trước, không có thì OCR.
+    Trả về (contract_code, source, confidence, dinh_kem_hop_dong_so, header_text).
+    contract_code=None = không đọc được, để soi tay, không bao giờ bịa số.
+    dinh_kem_hop_dong_so chỉ có giá trị khi mã là MƯỢN từ hợp đồng nguyên tắc
+    (văn bản này không có Số: riêng, vd Phụ lục). header_text là text đã đọc
+    để tìm mã (cả trang 1 nếu PDF gốc, vùng crop nếu phải OCR) - phục vụ
+    mapping/tra cứu ở Pass 3, không chỉ để debug.
 
-    QUAN TRỌNG: mọi kết quả (kể cả từ text layer, không chỉ OCR) đều phải
-    cross-check với dòng ngày trước khi gắn confidence=high - không có
-    ngoại lệ "tin luôn" cho bất kỳ nguồn nào, vì cùng 1 lỗi chọn nhầm dòng có
-    thể xảy ra ở cả text layer lẫn OCR (đã gặp thật, xem Claude.md mục 12)."""
+    Lưu ý: MỌI nguồn (kể cả text layer) đều phải cross-check ngày trước khi
+    gắn confidence=high - từng có bug chọn nhầm dòng ở cả 2 nguồn, không có
+    ngoại lệ "tin luôn"."""
     lines_text = _text_layer_lines(pdf_bytes)
     code_text = _find_code_line(lines_text) if lines_text else None
     if code_text:
         ddmm_text = _find_written_date_ddmm(lines_text)
         if _code_matches_date(code_text, ddmm_text):
-            return code_text, "pdf_text", "high", None
+            return code_text, "pdf_text", "high", None, "\n".join(lines_text)
 
     crop = header_ocr.render_header_crop(pdf_bytes)
     lines_t1 = header_ocr.ocr_tier1(crop)
     code_t1 = _find_code_line(lines_t1)
 
-    # Crop mặc định (30% đầu trang) có thể chưa chạm tới dòng "Số:" ở các văn
-    # bản có tiêu đề song ngữ Việt/Anh dài hơn bình thường (quốc hiệu 2 thứ
-    # tiếng + "PHỤ LỤC HỢP ĐỒNG/APPENDIX" chiếm nhiều dòng hơn - gặp thật ở 1
-    # số Phụ lục của LG Electronics). Chỉ thử lại với crop lớn hơn khi HOÀN
-    # TOÀN không thấy dòng "Số:" nào (không phải khi thấy nhưng parse thất bại
-    # - trường hợp đó crop lại vẫn ra cùng nội dung, không giúp gì, chỉ tốn
-    # thêm 1 lượt OCR vô ích). Vì vậy chi phí thêm chỉ phát sinh ở số ít file
-    # thật sự cần, không ảnh hưởng chi phí trung bình toàn bộ batch.
+    # Escalate crop 30% -> 55%: chỉ khi HOÀN TOÀN không thấy dòng "Số:" nào
+    # (tiêu đề song ngữ dài che khuất, gặp ở vài Phụ lục LG). Nếu thấy dòng
+    # "Số:" nhưng parse fail thì crop lại vẫn ra y hệt, không thử lại cho đỡ
+    # tốn 1 lượt OCR vô ích.
     if not code_t1 and not _has_so_line(lines_t1):
         crop_big = header_ocr.render_header_crop(pdf_bytes, top_ratio=0.55)
         lines_big = header_ocr.ocr_tier1(crop_big)
         code_big = _find_code_line(lines_big)
         if code_big:
-            # Dùng thẳng kết quả _find_code_line() (đã tự có vòng fallback quét
-            # mọi dòng bên trong) thay vì gate qua _has_so_line(lines_big) như
-            # bản đầu - gate đó có thể tự nó cũng bị false negative (gặp thật:
-            # ký tự "ő" - o 2 dấu sắc, khác "ố" - khiến cả SO_LINE_RE lẫn
-            # _has_so_line không khớp dòng "Số/No:", dù _find_code_line vẫn
-            # tìm ra mã đúng qua vòng fallback không neo). Nếu code_big rỗng vì
-            # crop lớn hơn cũng không giúp gì, giữ nguyên lines_t1/code_t1 cũ.
+            # Tin thẳng code_big (không gate qua _has_so_line lần 2) - gate
+            # đó từng false-negative với ký tự "ő" (gặp thật), trong khi
+            # fallback quét mọi dòng của _find_code_line vẫn ra đúng mã.
             lines_t1 = lines_big
             code_t1 = code_big
 
+    # Text layer sạch hơn OCR (không lỗi đọc nhầm) nên ưu tiên khi có sẵn;
+    # header_text dùng chung cho mọi kết quả từ đây trở xuống, kể cả confidence=low.
+    header_text = "\n".join(lines_text) if lines_text else "\n".join(lines_t1)
     ddmm_t1 = _find_written_date_ddmm(lines_t1)
 
     if code_t1 and _code_matches_date(code_t1, ddmm_t1):
-        return code_t1, "ocr_tier1", "high", None
+        return code_t1, "ocr_tier1", "high", None, header_text
 
     # Text layer và OCR không tự cross-check được (thiếu dòng ngày / lệch),
     # nhưng nếu CẢ HAI nguồn độc lập đều ra cùng 1 mã thì vẫn đủ tin cậy.
     if code_text and code_text == code_t1:
-        return code_t1, "pdf_text+ocr_tier1", "high", None
+        return code_t1, "pdf_text+ocr_tier1", "high", None, header_text
 
     # Không tìm được "Số:" riêng ở cả 2 nguồn -> có thể đây là Phụ lục/văn bản
     # đính kèm, không có mã độc lập -> thử lấy mã hợp đồng nguyên tắc mà nó
@@ -316,11 +270,11 @@ def extract(pdf_bytes):
         if not attached:
             attached = _find_attached_code(lines_t1)
         if attached:
-            return attached, "attached_parent", "high", attached
+            return attached, "attached_parent", "high", attached, header_text
 
     # Đáng lẽ escalate sang PaddleOCR-VL (tier 2), nhưng tier 2 CHƯA cài
     # (thiếu extras `paddlex[ocr]`, xem Claude.md mục 12/7). Không bịa số:
     # trả về mã đọc được (nếu có) với confidence=low để vào hàng soi tay.
     final_code = code_t1 or code_text
     source = "ocr_tier1" if code_t1 else ("pdf_text" if code_text else None)
-    return final_code, source, "low", None
+    return final_code, source, "low", None, header_text

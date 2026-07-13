@@ -1,35 +1,20 @@
-"""Benchmark harness cho các phương án tối ưu CPU OCR (xem plan tối ưu hiệu
-năng đã duyệt). Trước file này KHÔNG có hạ tầng benchmark nào trong repo (đã
-grep toàn bộ + git log -p --all xác nhận) - kết quả test top_ratio ghi trong
-Claude.md mục 6 chỉ là văn xuôi, không tái lập được.
+"""Benchmark các cấu hình OCR (mkldnn, dpi, det_limit_side_len...) để so
+sánh tốc độ + độ chính xác trước khi đổi header_ocr.py thật.
 
-Cố tình KHÔNG sửa header_ocr.py để thêm các tham số đang thử nghiệm
-(text_det_limit_side_len, dpi, enable_mkldnn, enable_hpi) - script này tự
-dựng PaddleOCR + tự monkeypatch header_ocr.render_header_crop trong tiến
-trình riêng của nó, để header_ocr.py giữ nguyên hành vi production cho tới
-khi có số liệu xác nhận cấu hình nào thắng (xem plan mục "Thứ tự thực hiện").
-Vẫn gọi thẳng code_extractor.extract() thật (không viết lại logic regex/
-cross-check) để so sánh đúng hành vi pipeline thật, không phải bản rút gọn.
+Cách dùng (từ code/, cần .venv active):
+    python ocr/bench_ocr.py cache --n 20            # tải + cache N PDF thật (1 lần)
+    python ocr/bench_ocr.py run --config baseline   # chạy 1 config, ghi JSON
+    python ocr/bench_ocr.py sweep                   # chạy hết config rồi so sánh
+    python ocr/bench_ocr.py compare                 # chỉ in bảng so sánh có sẵn
 
-Cách dùng (chạy từ code/, cần .venv active):
-    # 1. Tải + cache N PDF thật 1 lần (chỉ cần chạy lại nếu muốn đổi mẫu)
-    python ocr/bench_ocr.py cache --n 20
+Mỗi config chạy trong subprocess riêng (kể cả gọi tay 1 config) để 1 config
+crash cứng (native segfault) không kéo sập config khác. Đổi paddlepaddle
+version thì tự pip install trong .venv rồi chạy lại `run --config mkldnn_on`,
+script không toggle được version qua tham số.
 
-    # 2. Chạy 1 cấu hình - luôn tự spawn subprocess riêng dù gọi trực tiếp,
-    #    để 1 config crash cứng (native segfault, không phải Python
-    #    exception) không kéo sập các config khác.
-    python ocr/bench_ocr.py run --config baseline
-
-    # 3. Chạy hết các cấu hình đã định nghĩa (mỗi cái vẫn 1 subprocess riêng)
-    python ocr/bench_ocr.py sweep
-
-    # 4. Chỉ in lại bảng so sánh từ kết quả đã có, không chạy lại gì
-    python ocr/bench_ocr.py compare
-
-Lưu ý: đổi paddlepaddle version (mục 1 trong plan) không toggle được bằng
-tham số script - phải tự `pip install paddlepaddle==X` trong .venv rồi
-chạy lại `run --config mkldnn_on` để so sánh trước/sau downgrade.
-"""
+Cố tình KHÔNG sửa header_ocr.py để thêm tham số đang thử nghiệm - script này
+tự monkeypatch header_ocr.render_header_crop/_get_tier1 trong process riêng,
+giữ code production sạch cho tới khi có số liệu xác nhận."""
 
 import argparse
 import json
@@ -147,11 +132,9 @@ def _make_crop_renderer(dpi):
 
 def _run_config(name):
     cfg = CONFIGS[name]
-    # PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT dùng setdefault() ở header_ocr.py nên
-    # phải set (hoặc để trống) TRƯỚC khi import header_ocr/paddleocr lần đầu
-    # trong tiến trình con này. "run" luôn là tiến trình Python mới (spawn từ
-    # sweep(), hoặc gọi tay 1 lệnh riêng) nên set ở đây là an toàn - không
-    # ảnh hưởng process khác.
+    # Set trước khi import header_ocr/paddleocr trong tiến trình con này -
+    # "run" luôn là 1 process Python mới (từ sweep() hoặc gọi tay), nên set ở
+    # đây không ảnh hưởng process khác.
     if cfg.get("mkldnn") is True:
         os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "True"
 
@@ -171,7 +154,7 @@ def _run_config(name):
         t0 = time.perf_counter()
         entry = {"drive_file_id": row["drive_file_id"], "file_path": row["file_path"]}
         try:
-            code, source, confidence, _dinh_kem = extract(pdf_bytes)
+            code, source, confidence, _dinh_kem, _header_text = extract(pdf_bytes)
             entry.update(code=code, source=source, confidence=confidence, error=None)
         except Exception as e:
             entry.update(code=None, source=None, confidence=None, error=repr(e))

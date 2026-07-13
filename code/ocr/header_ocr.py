@@ -1,16 +1,8 @@
-"""Crop vùng header trang 1 + chạy OCR (tier 1 = PP-OCRv6, tier 2 = PaddleOCR-VL).
+"""Crop vùng header trang 1 + chạy OCR (tier 1 = PP-OCRv6, tier 2 = PaddleOCR-VL, chưa bật).
 
-Lịch sử mkldnn (2026-07-10, đã fix - không phải lỗi CPU máy này):
-`paddlepaddle` 3.3.1 + mkldnn bị crash "ConvertPirAttribute2RuntimeAttribute
-not support" (regression giới thiệu từ đúng bản 3.3.0, xác nhận qua GitHub
-issue PaddlePaddle/PaddleOCR#18162 và PaddlePaddle/Paddle#77340 - "worked
-correctly in PaddlePaddle 3.2.x and earlier"). Đã downgrade `paddlepaddle`
-xuống 3.2.1 (`requirements.txt`) - hết crash hoàn toàn, đã benchmark 20 file
-PDF thật: mkldnn bật cho ~1.9x nhanh hơn (39s/file so với 74s/file tắt), 0
-sai khác kết quả trích xuất so với tắt. Không còn cần tắt mkldnn nữa - để
-thư viện dùng mặc định gốc của nó (bật). Nếu sau này lỡ tay nâng cấp
-`paddlepaddle` lên >=3.3.0 trở lại, khả năng cao crash này quay lại - kiểm tra
-lại bằng `python ocr/bench_ocr.py run --config mkldnn_on` trước khi tin."""
+Lưu ý: paddlepaddle đang ghim 3.2.1 (xem requirements.txt) - bản 3.3.0+ từng
+crash khi bật mkldnn (PaddleOCR#18162). Nếu sau này nâng version, chạy lại
+`python ocr/bench_ocr.py run --config mkldnn_on` để chắc chắn trước khi tin."""
 
 import os
 
@@ -26,12 +18,9 @@ def _get_tier1():
     global _tier1
     if _tier1 is None:
         from paddleocr import PaddleOCR
-        # paddleocr mặc định cpu_threads=10/instance (DEFAULT_CPU_THREADS trong
-        # _constants.py) - ổn khi chạy 1 process, nhưng nếu chạy N process OCR
-        # song song (multiprocessing) mà không ghim thì N*10 thread tranh nhau
-        # vài core thật, triệt tiêu lợi ích song song. Đọc qua env var (do
-        # orchestrator set trước khi fork worker) thay vì tham số hàm, để không
-        # phải sửa signature ocr_tier1()/extract() phía trên.
+        # Ghim cpu_threads=1: mặc định paddleocr là 10/instance, chạy song
+        # song nhiều process mà không ghim sẽ tranh CPU lẫn nhau. Đọc qua env
+        # var vì orchestrator set trước khi fork worker (extract_contract_codes.py).
         cpu_threads = int(os.environ.get("OCR_CPU_THREADS", "1"))
         _tier1 = PaddleOCR(
             lang="vi",

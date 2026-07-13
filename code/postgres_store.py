@@ -27,22 +27,19 @@ ALTER TABLE contracts ADD COLUMN IF NOT EXISTS contract_code_confidence TEXT;
 ALTER TABLE contracts ADD COLUMN IF NOT EXISTS dinh_kem_hop_dong_so TEXT;
 -- Bỏ raw_header_text: JSON thô không dùng để tra cứu được gì, chỉ tốn chỗ.
 ALTER TABLE contracts DROP COLUMN IF EXISTS raw_header_text;
+-- Text vùng header đã đọc để tìm mã (cả trang 1 nếu PDF gốc, vùng crop nếu
+-- phải OCR) - phục vụ mapping/tra cứu ở Pass 3 (khác raw_header_text ở trên:
+-- lần này là TEXT thô tra cứu được bằng ILIKE, không phải JSON debug).
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS header_text TEXT;
 """
 
-# 3 mức "cần quét lại", LỒNG NHAU thật sự (unscanned ⊂ no_code ⊂ low - xem
-# fetch_pending()):
-#   1. unscanned: chưa từng quét/quét bị crash (extract_error/fetch_error/
-#      worker_crashed) - contract_code_confidence NULL thật, chưa có kết luận gì.
-#   2. no_code: (1) + đã quét nhưng KHÔNG ra được mã nào - extract() vẫn trả
-#      confidence='low' cho case này (xem code_extractor.py cuối extract()),
-#      không phải NULL, nhưng contract_code cũng NULL. Tương đương hệt
-#      "contract_code IS NULL" (filter gốc trước khi tách mức) vì confidence
-#      chỉ NULL hoặc 'low' khi code NULL, không bao giờ 'high' (mọi nhánh trả
-#      "high" trong extract() đều đi kèm code khác NULL - đã audit code).
-#   3. low: (2) + đã quét, CÓ mã nhưng cross-check ngày không khớp (confidence
-#      'low' dù contract_code khác NULL) - filter gốc "contract_code IS NULL"
-#      KHÔNG bao giờ bắt được nhóm này vì code đã có giá trị.
-# Mặc định chỉ lấy mức 1 (rẻ nhất, không tốn OCR quét lại kết luận đã có).
+# 4 mức "cần quét lại", LỒNG NHAU (unscanned ⊂ no_code ⊂ low ⊂ all):
+#   1. unscanned: chưa từng quét / quét bị crash - confidence NULL thật.
+#   2. no_code: (1) + đã quét nhưng không ra mã nào (confidence='low', code NULL).
+#   3. low: (2) + đã quét, có mã nhưng cross-check ngày không khớp.
+#   4. all: TẤT CẢ, kể cả confidence='high' - tốn OCR nhiều nhất, chỉ dùng để
+#      backfill 1 trường mới (vd header_text) cho các dòng đã xong từ trước.
+# Mặc định chỉ quét mức 1 - rẻ nhất, không tốn OCR lặp lại kết luận đã có.
 FETCH_PENDING_UNSCANNED = """
 SELECT drive_file_id, file_path
 FROM contracts
@@ -61,10 +58,19 @@ FROM contracts
 WHERE (contract_code_confidence IS NULL OR contract_code_confidence = 'low')
 """
 
+# WHERE true bắt buộc phải có - fetch_pending() luôn nối thêm "AND nhom ILIKE
+# %s" phía sau nếu có --nhom, thiếu WHERE ở đây sẽ vỡ SQL.
+FETCH_PENDING_ALL = """
+SELECT drive_file_id, file_path
+FROM contracts
+WHERE true
+"""
+
 _FETCH_PENDING_BY_RESCAN = {
     "unscanned": FETCH_PENDING_UNSCANNED,
     "no_code": FETCH_PENDING_NO_CODE,
     "low": FETCH_PENDING_LOW,
+    "all": FETCH_PENDING_ALL,
 }
 
 COUNT_STATUS = """
@@ -80,7 +86,8 @@ UPDATE contracts
 SET contract_code = %s,
     contract_code_source = %s,
     contract_code_confidence = %s,
-    dinh_kem_hop_dong_so = %s
+    dinh_kem_hop_dong_so = %s,
+    header_text = %s
 WHERE drive_file_id = %s;
 """
 
@@ -100,10 +107,9 @@ RETURNING (xmax = 0) AS inserted;
 
 
 def ensure_schema():
-    """Chạy DDL (tạo bảng + thêm cột Pass 2 nếu thiếu). save() đã tự gọi
-    trước upsert, nhưng fetch_pending()/update_contract_code() (Pass 2) có
-    thể chạy độc lập mà chưa từng chạy save() lần nào sau khi thêm cột mới -
-    nên phải tự đảm bảo schema đủ trước khi đọc/ghi."""
+    """Chạy DDL (tạo bảng + thêm cột nếu thiếu). Gọi trước khi đọc/ghi vì
+    Pass 2 có thể chạy độc lập, chưa chắc save() (Pass 1) đã từng chạy để
+    tạo cột mới."""
     conn = psycopg2.connect(**PG_CONFIG)
     with conn, conn.cursor() as cur:
         cur.execute(DDL)
@@ -129,13 +135,8 @@ def save(rows):
 
 def fetch_pending(limit=None, nhom=None, rescan="unscanned"):
     """Lấy các dòng cần quét (drive_file_id, file_path).
-    nhom=None -> lấy tất cả nhóm; nhom="KHU CÔNG NGHIỆP" -> chỉ nhóm đó
-    (so khớp ILIKE, không cần gõ đúng y hệt, giống --nhom bên crawl/).
-    limit=None -> lấy hết (trong phạm vi nhom đã lọc).
-    rescan: 1 trong 3 mức LỒNG NHAU (xem comment các hằng FETCH_PENDING_* phía
-    trên) - "unscanned" (mặc định, rẻ nhất, chỉ chưa-từng-quét/bị crash),
-    "no_code" (+ đã quét nhưng không ra mã nào), "low" (+ đã quét có mã nhưng
-    chưa chắc - rộng nhất)."""
+    nhom: lọc theo nhóm (ILIKE, không cần gõ y hệt), None = tất cả.
+    rescan: 1 trong 3 mức lồng nhau, xem comment FETCH_PENDING_* phía trên."""
     ensure_schema()
     query, params = _FETCH_PENDING_BY_RESCAN[rescan], []
     if nhom is not None:
@@ -154,10 +155,8 @@ def fetch_pending(limit=None, nhom=None, rescan="unscanned"):
 
 
 def count_status(nhom=None):
-    """Đếm theo nhom hoặc toàn bộ, trả về (tổng, chưa_quet, low_khong_ma,
-    low_co_ma) - đúng 4 nhóm rạch ròi theo 3 ranh giới mức rescan (xem comment
-    COUNT_STATUS/FETCH_PENDING_* phía trên). "đã xong" (confidence='high') suy
-    ra ở phía gọi = tổng - 3 số còn lại, không cần đếm riêng."""
+    """Đếm theo nhom hoặc toàn bộ. Trả về (tổng, chưa_quét, low_không_mã,
+    low_có_mã) - "đã xong" (confidence=high) = tổng trừ 3 số này, không đếm riêng."""
     ensure_schema()
     query, params = COUNT_STATUS, []
     if nhom is not None:
@@ -171,17 +170,17 @@ def count_status(nhom=None):
     return total, chua_quet, low_khong_ma, low_co_ma
 
 
-def update_contract_code(drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None):
+def update_contract_code(drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None, header_text=None):
     """Ghi kết quả bóc mã hợp đồng vào dòng tương ứng (khớp theo drive_file_id)."""
     conn = psycopg2.connect(**PG_CONFIG)
     with conn, conn.cursor() as cur:
-        cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, drive_file_id))
+        cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, header_text, drive_file_id))
     conn.close()
 
 
-def update_contract_code_cur(cur, drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None):
+def update_contract_code_cur(cur, drive_file_id, code, source, confidence, dinh_kem_hop_dong_so=None, header_text=None):
     """Giống update_contract_code() nhưng dùng cursor đã mở sẵn (1 connection
     tái sử dụng suốt lượt chạy) thay vì connect() mới mỗi dòng - dùng khi chạy
     pipeline song song (extract_contract_codes.py::run_pipeline), gọi commit()
     ở phía caller sau mỗi lần gọi hàm này."""
-    cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, drive_file_id))
+    cur.execute(UPDATE_CONTRACT_CODE, (code, source, confidence, dinh_kem_hop_dong_so, header_text, drive_file_id))

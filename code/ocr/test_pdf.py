@@ -1,24 +1,14 @@
-"""Test nhanh xem PaddleOCR đọc "chuẩn" hay không trên PDF có sẵn TRÊN MÁY
-(không qua Drive) - in text thô model đọc ra (không chỉ mã hợp đồng cuối cùng,
-vì regex có thể "vá" được vài lỗi đọc nhỏ, che mất việc OCR thật ra có đọc sai
-hay không).
+"""Debug nhanh xem PaddleOCR đọc "chuẩn" không trên 1 PDF có sẵn trên máy
+(không qua Drive) - in cả text thô model đọc ra, không chỉ mã cuối cùng, vì
+regex có thể "vá" lỗi đọc nhỏ và che mất việc OCR thật ra có đọc sai hay không.
 
-CHỈ IN RA TERMINAL - không ghi Postgres, không gọi Drive, không ghi file nào
-ra đĩa. Không có hàm lõi nào mới - chỉ gọi lại nguyên vẹn render_header_crop()/
-ocr_tier1() (header_ocr.py) và extract() (code_extractor.py) đã dùng trong
-pipeline production thật (extract_contract_codes.py), cùng tham số mặc định
-(top_ratio, dpi, cấu hình PaddleOCR) - không viết lại/khác đi logic nào, nên
-kết quả phản ánh đúng thuật toán thật để đánh giá hiệu quả. extract() tự nó
-không đụng Postgres - việc ghi DB nằm ở extract_contract_codes.py::finalize(),
-script này không gọi tới nên không có side effect nào ngoài in ra màn hình.
+Chỉ in ra terminal - không đụng Postgres/Drive/ghi file. Gọi lại nguyên vẹn
+render_header_crop()/ocr_tier1()/extract() y hệt pipeline production
+(extract_contract_codes.py), không viết lại logic nào khác.
 
 Cách dùng (từ code/):
-    python ocr/test_pdf.py
-        # mặc định: quét hết *.pdf trong ocr/test_input/ - kéo-thả file PDF
-        # muốn test vào thư mục đó rồi chạy lệnh trên, không cần tham số gì.
-    python ocr/test_pdf.py duong_dan/file1.pdf duong_dan/file2.pdf
-    python ocr/test_pdf.py duong_dan/thu_muc_khac/
-        # hoặc chỉ định file/thư mục khác nếu cần, không bắt buộc dùng test_input/
+    python ocr/test_pdf.py                          # quét hết PDF trong ocr/test_input/
+    python ocr/test_pdf.py duong_dan/file1.pdf       # hoặc chỉ định file/thư mục cụ thể
 """
 
 import argparse
@@ -75,12 +65,13 @@ def test_one(pdf_path):
         lines = header_ocr.ocr_tier1(crop)
         _print_lines(f"OCR {label} (top_ratio={top_ratio})", lines)
 
-    code, source, confidence, dinh_kem = extract(pdf_bytes)
+    code, source, confidence, dinh_kem, header_text = extract(pdf_bytes)
     print(f"  --- Kết quả extract() thật (pipeline production sẽ ra đúng cái này) ---")
     print(f"    contract_code = {code!r}")
     print(f"    source        = {source!r}")
     print(f"    confidence    = {confidence!r}")
     print(f"    dinh_kem      = {dinh_kem!r}")
+    print(f"    header_text   = {header_text!r}")
 
 
 def main():
