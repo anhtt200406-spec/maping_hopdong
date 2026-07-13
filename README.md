@@ -2,12 +2,6 @@
 
 Trích xuất danh mục hợp đồng (nhóm/brand/tên file) từ cây thư mục Google Drive (Legal) đổ vào Postgres, sau đó dùng OCR để bóc **mã hợp đồng** từ nội dung PDF. Đây là bước đệm cho bài toán xa hơn: *mapping mã hợp đồng ↔ record ở một DB khác* (định danh theo tên, không theo mã).
 
-## Trạng thái hiện tại
-
-- **Pass 1 — xong.** 4024 hợp đồng đã đổ vào Postgres.
-- **Pass 2 — code xong**, đã song song hoá + tối ưu tốc độ OCR, đang chạy thử theo từng nhóm. **Chưa chạy full 4024 file.**
-- **Pass 3 — chưa làm** (nối `contract_code` sang DB khác).
-
 ## Kiến trúc pipeline
 
 ```
