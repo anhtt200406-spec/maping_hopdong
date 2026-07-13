@@ -7,3 +7,4 @@ __pycache__/
 .bench_cache/
 code/ocr/test_input/*.pdf
 !code/ocr/test_input/.gitkeep
+kaggle_pass2_plan.md
