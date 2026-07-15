@@ -8,3 +8,7 @@ __pycache__/
 code/ocr/test_input/*.pdf
 !code/ocr/test_input/.gitkeep
 kaggle_pass2_plan.md
+phase2.md
+# storage_state.json (code/matching/) chứa cookie/localStorage đăng nhập
+# Google SSO cho urcard-portal - nhạy cảm như credentials.json/token.json.
+code/matching/storage_state.json
